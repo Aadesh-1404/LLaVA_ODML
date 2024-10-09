@@ -17,13 +17,19 @@ from llava.mm_utils import (
     get_model_name_from_path,
 )
 
-from PIL import Image
-
+from time import time
 import requests
 from PIL import Image
 from io import BytesIO
 import re
 
+from fvcore.nn import FlopCountAnalysis
+from fvcore.nn import flop_count_str
+
+from calflops import calculate_flops
+
+# import os
+# os.environ["CUDA_VISIBLE_DEVICES"] = "4"
 
 def image_parser(args):
     out = args.image_file.split(args.sep)
@@ -36,6 +42,11 @@ def load_image(image_file):
         image = Image.open(BytesIO(response.content)).convert("RGB")
     else:
         image = Image.open(image_file).convert("RGB")
+    # Resize images for Lab 2
+    height = image.size[0]
+    width = image.size[1]
+    scale = 1
+    image = image.resize((height//scale, width//scale))
     return image
 
 
@@ -53,8 +64,24 @@ def eval_model(args):
 
     model_name = get_model_name_from_path(args.model_path)
     tokenizer, model, image_processor, context_len = load_pretrained_model(
-        args.model_path, args.model_base, model_name
+        args.model_path,
+        args.model_base,
+        model_name,
+        # attn_implementation="eager",
     )
+    ## Remove last 4 layers
+    # model.model.transformer.h = model.model.transformer.h[:18]
+    ## how do I check the layers of model?
+    # print(model.summary())
+    # for name, layer in model.named_modules():
+    #     print(f"Layer Name: {name} | Layer Type: {layer}")
+    # model.layer.layers = model.layer.layers[:18]
+    # print(len(model.model.transformer.h))
+
+
+
+    print(f">>> Model: {model_name}")
+    print(f">>> Context length: {context_len}")
 
     qs = args.query
     image_token_se = DEFAULT_IM_START_TOKEN + DEFAULT_IMAGE_TOKEN + DEFAULT_IM_END_TOKEN
@@ -99,11 +126,9 @@ def eval_model(args):
     image_files = image_parser(args)
     images = load_images(image_files)
     image_sizes = [x.size for x in images]
-    images_tensor = process_images(
-        images,
-        image_processor,
-        model.config
-    ).to(model.device, dtype=torch.float16)
+    images_tensor = process_images(images, image_processor, model.config).to(
+        model.device, dtype=torch.float16
+    )
 
     input_ids = (
         tokenizer_image_token(prompt, tokenizer, IMAGE_TOKEN_INDEX, return_tensors="pt")
@@ -111,6 +136,27 @@ def eval_model(args):
         .cuda()
     )
 
+    # attention_mask = torch.ones_like(input_ids).cuda()
+    # traced_model = torch.jit.trace(model, (input_ids, attention_mask))
+
+    # flops = FlopCountAnalysis(traced_model, (input_ids, attention_mask))
+    # flops = FlopCountAnalysis(model, input_ids)
+    # print(flop_count_str(flops))
+
+    '''
+    For FLOPs calculation, we use calflops (https://github.com/MrYxJ/calculate-flops.pytorch/tree/main) instead of fvcore.nn.FlopCountAnalysis (gave CUDA error)
+    '''
+
+    print(
+        f"current sequence length: {input_ids.size(1)}, device: {model.device}"
+    )
+
+    flops, macs, params = calculate_flops(
+        model=model, input_shape=(1, input_ids.size(1)), transformer_tokenizer=tokenizer, output_precision=16, print_results=False
+    )
+    print(f">>> FLOPS: {flops}, MACs: {macs}, Params: {params}")
+
+    start = time()
     with torch.inference_mode():
         output_ids = model.generate(
             input_ids,
@@ -125,6 +171,7 @@ def eval_model(args):
         )
 
     outputs = tokenizer.batch_decode(output_ids, skip_special_tokens=True)[0].strip()
+    print(f">>> Inference time: {time() - start}")
     print(outputs)
 
 

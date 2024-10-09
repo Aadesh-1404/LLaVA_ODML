@@ -98,6 +98,9 @@ def disable_torch_init():
     setattr(torch.nn.Linear, "reset_parameters", lambda self: None)
     setattr(torch.nn.LayerNorm, "reset_parameters", lambda self: None)
 
+    import os
+    os.environ["CUDA_VISIBLE_DEVICES"] = "4"
+
 
 def violates_moderation(text):
     """
